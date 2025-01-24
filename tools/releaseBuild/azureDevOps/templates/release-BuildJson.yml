@@ -68,7 +68,7 @@ steps:
     }
   displayName: Download and Capture NuPkgs
 
-- task: AzureFileCopy@2
+- task: AzureFileCopy@4
   displayName: 'AzureBlob build info JSON file Copy'
   inputs:
     SourcePath: '$(BuildInfoJsonFile)'
@@ -77,8 +77,9 @@ steps:
     storage: '$(StorageAccount)'
     ContainerName: BuildInfo
   condition: and(succeeded(), eq(variables['CopyMainBuildInfo'], 'YES'))
+  retryCountOnTaskFailure: 2
 
-- task: AzureFileCopy@2
+- task: AzureFileCopy@4
   displayName: 'AzureBlob build info ''lts.json'' Copy when needed'
   inputs:
     SourcePath: '$(LtsBuildInfoJsonFile)'
@@ -87,8 +88,9 @@ steps:
     storage: '$(StorageAccount)'
     ContainerName: BuildInfo
   condition: and(succeeded(), eq(variables['CopyLTSBuildInfo'], 'YES'))
+  retryCountOnTaskFailure: 2
 
-- task: AzureFileCopy@2
+- task: AzureFileCopy@4
   displayName: 'AzureBlob build info ''Major-Minor.json'' Copy when needed'
   inputs:
     SourcePath: '$(VersionBuildInfoJsonFile)'
@@ -97,3 +99,4 @@ steps:
     storage: '$(StorageAccount)'
     ContainerName: BuildInfo
   condition: and(succeeded(), eq(variables['CopyVersionBuildInfo'], 'YES'))
+  retryCountOnTaskFailure: 2

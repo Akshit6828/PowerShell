@@ -5,7 +5,6 @@ parameters:
 jobs:
 - job: package_macOS_${{ parameters.buildArchitecture }}
   displayName: Package macOS ${{ parameters.buildArchitecture }}
-  dependsOn: MacFileSigningJob_${{ parameters.buildArchitecture }}
   condition: succeeded()
   pool:
     vmImage: macos-latest
@@ -17,6 +16,7 @@ jobs:
       value: false
     - name: NugetSecurityAnalysisWarningLevel
       value: none
+    - group: DotNetPrivateBuildAccess
   steps:
   - checkout: self
     clean: true
@@ -107,19 +107,37 @@ jobs:
       Write-Host ("sending " + $vstsCommandString)
       Write-Host "##$vstsCommandString"
     displayName: Compress signed files
+    retryCountOnTaskFailure: 2
+
 
   - pwsh: |
-      tools/releaseBuild/macOS/PowerShellPackageVsts.ps1 -location $(PowerShellRoot) -BootStrap
+      try {
+        tools/releaseBuild/macOS/PowerShellPackageVsts.ps1 -location $(PowerShellRoot) -BootStrap
+      } catch {
+        Get-Error
+        throw
+      }
     displayName: 'Bootstrap VM'
+    env:
+      __DOTNET_RUNTIME_FEED_KEY: $(RUNTIME_SOURCEFEED_KEY)
 
   - pwsh: |
       # Add -SkipReleaseChecks as a mitigation to unblock release.
       # macos-10.15 does not allow creating a folder under root. Hence, moving the folder.
-      $(Build.SourcesDirectory)/tools/releaseBuild/macOS/PowerShellPackageVsts.ps1 -ReleaseTag $(ReleaseTagVar) -Destination $(System.ArtifactsDirectory) -location $(PowerShellRoot) -ArtifactName macosPkgResults -BuildZip $(BuildPackagePath) -ExtraPackage "tar" -Runtime 'osx-${{ parameters.buildArchitecture }}' -SkipReleaseChecks
+      try {
+        $(Build.SourcesDirectory)/tools/releaseBuild/macOS/PowerShellPackageVsts.ps1 -ReleaseTag $(ReleaseTagVar) -Destination $(System.ArtifactsDirectory) -location $(PowerShellRoot) -ArtifactName macosPkgResults -BuildZip $(BuildPackagePath) -ExtraPackage "tar" -Runtime 'osx-${{ parameters.buildArchitecture }}' -SkipReleaseChecks
+      } catch {
+        Get-Error
+        throw
+      }
     displayName: 'Package'
+    env:
+      __DOTNET_RUNTIME_FEED_KEY: $(RUNTIME_SOURCEFEED_KEY)
 
   - task: ms.vss-governance-buildtask.governance-build-task-component-detection.ComponentGovernanceComponentDetection@0
     displayName: 'Component Detection'
     inputs:
       sourceScanPath: '$(PowerShellRoot)/tools'
       snapshotForceEnabled: true
+
+  - template: /tools/releaseBuild/azureDevOps/templates/step/finalize.yml

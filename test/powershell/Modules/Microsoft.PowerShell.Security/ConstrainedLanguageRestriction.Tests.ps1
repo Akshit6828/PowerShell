@@ -83,7 +83,7 @@ try
                 $result = Get-Command NestedFn1 2> $null;
                 return ($result -ne $null)
 '@
-                $isCommandAccessible = powershell.exe -noprofile -nologo -c $command
+                $isCommandAccessible = pwsh.exe -noprofile -nologo -c $command
             }
             finally
             {
@@ -460,7 +460,7 @@ try
             $rs.Open()
             $pl = $rs.CreatePipeline('"Hello" > c:\temp\foo.txt')
 
-            $e = { $pl.Invoke() } | Should -Throw -ErrorId "CmdletInvocationException"
+            $e = { $pl.Invoke() } | Should -Throw -ErrorId "DriveNotFoundException"
 
             $rs.Dispose()
         }
@@ -554,22 +554,20 @@ try
         }
     }
 
-    Describe "Tab expansion in constrained language mode" -Tags 'Feature','RequireAdminOnWindows' {
+    Describe "Conversion in constrained language mode" -Tags 'Feature','RequireAdminOnWindows' {
 
-        It "Verifies that tab expansion cannot convert disallowed IntPtr type" {
+        It "Verifies that PowerShell cannot convert disallowed IntPtr type" {
 
             try
             {
                 $ExecutionContext.SessionState.LanguageMode = "ConstrainedLanguage"
-
-                $result = @(TabExpansion2 '(1234 -as [IntPtr]).' 20 | ForEach-Object CompletionMatches | Where-Object CompletionText -Match Pointer)
+                $result = 1234 -as [IntPtr]
+                $null -eq $result | Should -BeTrue
             }
             finally
             {
                 Invoke-LanguageModeTestingSupportCmdlet -EnableFullLanguageMode
             }
-
-            $result.Count | Should -Be 0
         }
     }
 
@@ -968,12 +966,17 @@ try
         }
 
         It "Verifies a scriptblock from a trusted script file does not run as trusted" {
+            if (Test-IsWindowsArm64) {
+                Set-ItResult -Pending -Because "https://github.com/PowerShell/PowerShell/issues/20169"
+                return
+            }
 
             $result = $null
 
             try
             {
                 Invoke-LanguageModeTestingSupportCmdlet -SetLockdownMode
+                # Wait for the lockdown mode to take effect
                 $ExecutionContext.SessionState.LanguageMode = "ConstrainedLanguage"
 
                 # Import untrusted module
@@ -1029,6 +1032,7 @@ try
 
                 Import-Module -Name $scriptModulePath -Force
 
+
                 $result1 = ModuleFn
                 $result2 = ImportModuleFn
             }
@@ -1048,9 +1052,7 @@ try
 
             $randomClassName = "class_$(Get-Random -Max 9999)"
 
-            $script = @'
-            class {0} {{ static Hello([string] $msg) {{ [System.Console]::WriteLine("Hello from: $msg") }} }}
-'@ -f $randomClassName
+            $script = "class ${randomClassName} { static [string] GetLanguageMode() { return (Get-Variable -ValueOnly -Name ExecutionContext).SessionState.LanguageMode } }"
 
             $modulePathName = "modulePath_$(Get-Random -Max 9999)"
             $modulePath = Join-Path $testdrive $modulePathName
@@ -1099,46 +1101,34 @@ try
 
         It "Verifies that classes cannot be created in script files running under constrained language" {
 
-            try
-            {
-                Invoke-LanguageModeTestingSupportCmdlet -SetLockdownMode
-                $ExecutionContext.SessionState.LanguageMode = "ConstrainedLanguage"
-
-                & ($untrustedScriptFile)
-                throw "No Error!"
+            try {
+                $ps = [powershell]::Create("NewRunspace")
+                $ps.Runspace.LanguageMode = "ConstrainedLanguage"
+                $result = $ps.AddScript($untrustedScriptFile).Invoke()
+                $ps.Streams.Error[0].FullyQualifiedErrorId | Should -BeExactly  "ClassesNotAllowedInConstrainedLanguage" -Because "Invoke-Command should fail in constrained language"
             }
-            catch
-            {
-                $expectedError = $_
+            catch {
+                $_ | Should -BeNullOrEmpty -Because "exception '$_' unexpected."
             }
-            finally
-            {
-                Invoke-LanguageModeTestingSupportCmdlet -EnableFullLanguageMode -RevertLockdownMode
+            finally {
+                $ps.Dispose()
             }
-
-            $expectedError.FullyQualifiedErrorId | Should -BeExactly "ClassesNotAllowedInConstrainedLanguage"
         }
 
         It "Verifies that classes cannot be created in untrusted script modules running under constrained language" {
-
-            try
-            {
-                Invoke-LanguageModeTestingSupportCmdlet -SetLockdownMode
-                $ExecutionContext.SessionState.LanguageMode = "ConstrainedLanguage"
-
-                Import-Module -Name $untrustedScriptModule -ErrorAction Stop
-                throw "No Error!"
+            try {
+                $ps = [powershell]::Create("NewRunspace")
+                $ps.Runspace.LanguageMode = "ConstrainedLanguage"
+                # importing the module whilst in constrained language makes it untrusted, even without lockdown mode
+                $ps.AddCommand("Import-Module").AddParameter("Name", $untrustedScriptModule).Invoke()
+                $ps.Streams.Error[0].FullyQualifiedErrorId | Should -BeExactly  "ClassesNotAllowedInConstrainedLanguage" -Because "Import-Module should fail in constrained language"
             }
-            catch
-            {
-                $expectedError = $_
+            catch {
+                $_ | Should -BeNullOrEmpty -Because "exception '$_' unexpected."
             }
-            finally
-            {
-                Invoke-LanguageModeTestingSupportCmdlet -EnableFullLanguageMode -RevertLockdownMode
+            finally {
+                $ps.Dispose()
             }
-
-            $expectedError.FullyQualifiedErrorId | Should -BeExactly "ClassesNotAllowedInConstrainedLanguage"
         }
 
         It "Verifies that classes can be created in trusted script files running under constrained language" {

@@ -38,7 +38,7 @@ namespace System.Management.Automation
     internal abstract class Adapter
     {
         /// <summary>
-        /// Tracer for this and derivate classes.
+        /// Tracer for this and derivative classes.
         /// </summary>
         [TraceSource("ETS", "Extended Type System")]
         protected static PSTraceSource tracer = PSTraceSource.GetTracer("ETS", "Extended Type System");
@@ -833,7 +833,7 @@ namespace System.Management.Automation
                 return GetArgumentType(PSObject.Base(psref.Value), isByRefParameter: false);
             }
 
-            return argument.GetType();
+            return GetObjectType(argument, debase: false);
         }
 
         internal static ConversionRank GetArgumentConversionRank(object argument, Type parameterType, bool isByRef, bool allowCastingToByRefLikeType)
@@ -1377,6 +1377,27 @@ namespace System.Management.Automation
             return methodInfo;
         }
 
+        private static Type[] ResolveGenericTypeParameters(object[] genericTypeParameters)
+        {
+            if (genericTypeParameters is null || genericTypeParameters.Length == 0)
+            {
+                return null;
+            }
+
+            Type[] genericParamTypes = new Type[genericTypeParameters.Length];
+            for (int i = 0; i < genericTypeParameters.Length; i++)
+            {
+                genericParamTypes[i] = genericTypeParameters[i] switch
+                {
+                    Type paramType => paramType,
+                    ITypeName paramTypeName => TypeOps.ResolveTypeName(paramTypeName, paramTypeName.Extent),
+                    _ => throw new ArgumentException("Unexpected value"),
+                };
+            }
+
+            return genericParamTypes;
+        }
+
         private static MethodInformation FindBestMethodImpl(
             MethodInformation[] methods,
             PSMethodInvocationConstraints invocationConstraints,
@@ -1404,15 +1425,15 @@ namespace System.Management.Automation
                 return methods[0];
             }
 
-            Type[] argumentTypes = arguments.Select(EffectiveArgumentType).ToArray();
-            Type[] genericParameters = invocationConstraints?.GenericTypeParameters ?? Array.Empty<Type>();
-            List<OverloadCandidate> candidates = new List<OverloadCandidate>();
+            Type[] genericParamTypes = ResolveGenericTypeParameters(invocationConstraints?.GenericTypeParameters);
+            var candidates = new List<OverloadCandidate>();
+
             for (int i = 0; i < methods.Length; i++)
             {
                 MethodInformation methodInfo = methods[i];
 
                 if (methodInfo.method?.DeclaringType.IsGenericTypeDefinition == true
-                    || (!methodInfo.isGeneric && genericParameters.Length > 0))
+                    || (!methodInfo.isGeneric && genericParamTypes is not null))
                 {
                     // If method is defined by an *open* generic type, or
                     // if generic parameters were provided and this method isn't generic, skip it.
@@ -1421,29 +1442,16 @@ namespace System.Management.Automation
 
                 if (methodInfo.isGeneric)
                 {
-                    Type[] argumentTypesForTypeInference = new Type[argumentTypes.Length];
-                    Array.Copy(argumentTypes, argumentTypesForTypeInference, argumentTypes.Length);
-
-                    if (invocationConstraints?.ParameterTypes is not null)
-                    {
-                        int parameterIndex = 0;
-                        foreach (Type typeConstraintFromCallSite in invocationConstraints.ParameterTypes)
-                        {
-                            if (typeConstraintFromCallSite != null)
-                            {
-                                argumentTypesForTypeInference[parameterIndex] = typeConstraintFromCallSite;
-                            }
-
-                            parameterIndex++;
-                        }
-                    }
-
-                    if (genericParameters.Length > 0 && methodInfo.method is MethodInfo originalMethod)
+                    if (genericParamTypes is not null)
                     {
                         try
                         {
+                            // This cast is safe, because
+                            // 1. Only ConstructorInfo and MethodInfo derive from MethodBase
+                            // 2. ConstructorInfo.IsGenericMethod is always false
+                            var originalMethod = (MethodInfo)methodInfo.method;
                             methodInfo = new MethodInformation(
-                                originalMethod.MakeGenericMethod(genericParameters),
+                                originalMethod.MakeGenericMethod(genericParamTypes),
                                 parametersToIgnore: 0);
                         }
                         catch (ArgumentException)
@@ -1453,12 +1461,29 @@ namespace System.Management.Automation
                             continue;
                         }
                     }
-
-                    methodInfo = TypeInference.Infer(methodInfo, argumentTypesForTypeInference);
-                    if (methodInfo is null)
+                    else
                     {
-                        // Skip generic methods for which we cannot infer type arguments
-                        continue;
+                        // Infer the generic method when generic parameter types are not specified.
+                        Type[] argumentTypes = arguments.Select(EffectiveArgumentType).ToArray();
+                        Type[] paramConstraintTypes = invocationConstraints?.ParameterTypes;
+
+                        if (paramConstraintTypes is not null)
+                        {
+                            for (int k = 0; k < paramConstraintTypes.Length; k++)
+                            {
+                                if (paramConstraintTypes[k] is not null)
+                                {
+                                    argumentTypes[k] = paramConstraintTypes[k];
+                                }
+                            }
+                        }
+
+                        methodInfo = TypeInference.Infer(methodInfo, argumentTypes);
+                        if (methodInfo is null)
+                        {
+                            // Skip generic methods for which we cannot infer type arguments
+                            continue;
+                        }
                     }
                 }
 
@@ -1602,7 +1627,7 @@ namespace System.Management.Automation
 
             if (candidates.Count == 0)
             {
-                if ((methods.Length > 0) && (methods.All(static m => m.method != null && m.method.DeclaringType.IsGenericTypeDefinition && m.method.IsStatic)))
+                if (methods.Length > 0 && methods.All(static m => m.method != null && m.method.DeclaringType.IsGenericTypeDefinition && m.method.IsStatic))
                 {
                     errorId = "CannotInvokeStaticMethodOnUninstantiatedGenericType";
                     errorMsg = string.Format(
@@ -1611,19 +1636,13 @@ namespace System.Management.Automation
                         methods[0].method.DeclaringType.FullName);
                     return null;
                 }
-                else if (genericParameters.Length != 0 && genericParameters.Contains(null))
-                {
-                    errorId = "TypeNotFoundForGenericMethod";
-                    errorMsg = ExtendedTypeSystem.MethodGenericArgumentTypeNotFoundException;
-                    return null;
-                }
-                else if (genericParameters.Length != 0)
+                else if (genericParamTypes is not null)
                 {
                     errorId = "MethodCountCouldNotFindBestGeneric";
                     errorMsg = string.Format(
                         ExtendedTypeSystem.MethodGenericArgumentCountException,
                         methods[0].method.Name,
-                        genericParameters.Length,
+                        genericParamTypes.Length,
                         arguments.Length);
                     return null;
                 }
@@ -1651,18 +1670,21 @@ namespace System.Management.Automation
 
         internal static Type EffectiveArgumentType(object arg)
         {
-            if (arg != null)
+            arg = PSObject.Base(arg);
+            if (arg is null)
             {
-                arg = PSObject.Base(arg);
-                object[] argAsArray = arg as object[];
-                if (argAsArray != null && argAsArray.Length > 0 && PSObject.Base(argAsArray[0]) != null)
-                {
-                    Type firstType = PSObject.Base(argAsArray[0]).GetType();
-                    bool allSameType = true;
+                return typeof(LanguagePrimitives.Null);
+            }
 
-                    for (int j = 1; j < argAsArray.Length; ++j)
+            if (arg is object[] array && array.Length > 0)
+            {
+                Type firstType = GetObjectType(array[0], debase: true);
+                if (firstType is not null)
+                {
+                    bool allSameType = true;
+                    for (int j = 1; j < array.Length; ++j)
                     {
-                        if (argAsArray[j] == null || firstType != PSObject.Base(argAsArray[j]).GetType())
+                        if (firstType != GetObjectType(array[j], debase: true))
                         {
                             allSameType = false;
                             break;
@@ -1674,13 +1696,19 @@ namespace System.Management.Automation
                         return firstType.MakeArrayType();
                     }
                 }
+            }
 
-                return arg.GetType();
-            }
-            else
+            return GetObjectType(arg, debase: false);
+        }
+
+        internal static Type GetObjectType(object obj, bool debase)
+        {
+            if (debase)
             {
-                return typeof(LanguagePrimitives.Null);
+                obj = PSObject.Base(obj);
             }
+
+            return obj == NullString.Value ? typeof(string) : obj?.GetType();
         }
 
         internal static void SetReferences(object[] arguments, MethodInformation methodInformation, object[] originalArguments)
@@ -1798,7 +1826,7 @@ namespace System.Management.Automation
             }
 
             // We are going to put all the remaining arguments into an array
-            // and convert them to the propper type, if necessary to be the
+            // and convert them to the proper type, if necessary to be the
             // one argument for this last parameter
             int remainingArgumentCount = arguments.Length - parametersLength + 1;
             if (remainingArgumentCount == 1 && arguments[arguments.Length - 1] == null)
@@ -1850,7 +1878,7 @@ namespace System.Management.Automation
         }
 
         /// <summary>
-        /// Auxiliary method in MethodInvoke to set newArguments[index] with the propper value.
+        /// Auxiliary method in MethodInvoke to set newArguments[index] with the proper value.
         /// </summary>
         /// <param name="methodName">Used for the MethodException that might be thrown.</param>
         /// <param name="arguments">The complete array of arguments.</param>
@@ -2202,7 +2230,7 @@ namespace System.Management.Automation
             // be thrown when converting arguments to the ByRef-like parameter types.
             //
             // So when reaching here, we only care about (1) if the method return type is
-            // BeRef-like; (2) if it's a constrcutor of a ByRef-like type.
+            // BeRef-like; (2) if it's a constructor of a ByRef-like type.
 
             if (method is ConstructorInfo ctor)
             {
@@ -2239,10 +2267,7 @@ namespace System.Management.Automation
 
             if (!_useReflection)
             {
-                if (_methodInvoker == null)
-                {
-                    _methodInvoker = GetMethodInvoker(methodInfo);
-                }
+                _methodInvoker ??= GetMethodInvoker(methodInfo);
 
                 if (_methodInvoker != null)
                 {
@@ -3028,10 +3053,7 @@ namespace System.Management.Automation
             {
                 get
                 {
-                    if (_isHidden == null)
-                    {
-                        _isHidden = member.GetCustomAttributes(typeof(HiddenAttribute), inherit: false).Length != 0;
-                    }
+                    _isHidden ??= member.GetCustomAttributes(typeof(HiddenAttribute), inherit: false).Length != 0;
 
                     return _isHidden.Value;
                 }
@@ -3846,6 +3868,33 @@ namespace System.Management.Automation
             return entry.isStatic;
         }
 
+        /// <summary>
+        /// Get the string representation of the default value of passed-in parameter.
+        /// </summary>
+        /// <param name="parameterInfo">ParameterInfo containing the parameter's default value.</param>
+        /// <returns>String representation of the parameter's default value.</returns>
+        private static string GetDefaultValueStringRepresentation(ParameterInfo parameterInfo)
+        {
+            var parameterType = parameterInfo.ParameterType;
+            var parameterDefaultValue = parameterInfo.DefaultValue;
+
+            if (parameterDefaultValue == null)
+            {
+                return (parameterType.IsValueType || parameterType.IsGenericMethodParameter)
+                    ? "default"
+                    : "null";
+            }
+
+            if (parameterType.IsEnum)
+            {
+                return string.Create(CultureInfo.InvariantCulture, $"{parameterType}.{parameterDefaultValue}");
+            }
+
+            return (parameterDefaultValue is string)
+                ? string.Create(CultureInfo.InvariantCulture, $"\"{parameterDefaultValue}\"")
+                : parameterDefaultValue.ToString();
+        }
+
         #endregion auxiliary methods and classes
 
         #region virtual
@@ -3871,11 +3920,11 @@ namespace System.Management.Automation
         /// <summary>
         /// Get the .NET member based on the given member name.
         /// </summary>
-        /// <remark>
+        /// <remarks>
         /// Dynamic members of an object that implements IDynamicMetaObjectProvider are not included because
         ///   1. Dynamic members cannot be invoked via reflection;
         ///   2. Access to dynamic members is handled by the DLR for free.
-        /// </remark>
+        /// </remarks>
         /// <param name="obj">Object to retrieve the PSMemberInfo from.</param>
         /// <param name="memberName">Name of the member to be retrieved.</param>
         /// <returns>
@@ -3908,10 +3957,10 @@ namespace System.Management.Automation
         /// In the case of the DirectoryEntry adapter, this could be a cache of the objectClass
         /// to the properties available in it.
         /// </summary>
-        /// <remark>
+        /// <remarks>
         /// Dynamic members of an object that implements IDynamicMetaObjectProvider are included because
         /// we want to view the dynamic members via 'Get-Member' and be able to auto-complete those members.
-        /// </remark>
+        /// </remarks>
         /// <param name="obj">Object to get all the member information from.</param>
         /// <returns>All members in obj.</returns>
         protected override PSMemberInfoInternalCollection<T> GetMembers<T>(object obj)
@@ -4316,7 +4365,7 @@ namespace System.Management.Automation
 
         /// <summary>
         /// This is a flavor of MethodInvokeDotNet to deal with a peculiarity of property setters:
-        /// Tthe setValue is always the last parameter. This enables a parameter after a varargs or optional
+        /// The setValue is always the last parameter. This enables a parameter after a varargs or optional
         /// parameters and GetBestMethodAndArguments is not prepared for that.
         /// This method disregards the last parameter in its call to GetBestMethodAndArguments used in this case
         /// more for its "Arguments" side than for its "BestMethod" side, since there is only one method.
@@ -4392,7 +4441,7 @@ namespace System.Management.Automation
             }
 
             builder.Append(memberName ?? methodEntry.Name);
-            if (methodEntry.IsGenericMethodDefinition)
+            if (methodEntry.IsGenericMethodDefinition || methodEntry.IsGenericMethod)
             {
                 builder.Append('[');
 
@@ -4438,6 +4487,13 @@ namespace System.Management.Automation
                     builder.Append(ToStringCodeMethods.Type(parameterType));
                     builder.Append(' ');
                     builder.Append(parameter.Name);
+
+                    if (parameter.HasDefaultValue)
+                    {
+                        builder.Append(" = ");
+                        builder.Append(GetDefaultValueStringRepresentation(parameter));
+                    }
+
                     builder.Append(", ");
                 }
 
@@ -4709,6 +4765,7 @@ namespace System.Management.Automation
 
     #endregion
 
+#if !UNIX
     /// <summary>
     /// Used only to add a COM style type name to a COM interop .NET type.
     /// </summary>
@@ -4739,6 +4796,8 @@ namespace System.Management.Automation
             return new ConsolidatedString(GetTypeNameHierarchy(obj), interned: true);
         }
     }
+#endif
+
     /// <summary>
     /// Adapter used for GetMember and GetMembers only.
     /// All other methods will not be called.
@@ -5381,7 +5440,7 @@ namespace System.Management.Automation
             }
 
             XmlNodeList nodeChildren = node.ChildNodes;
-            // nodeChildren will not be null as we already verified iff the node has children.
+            // nodeChildren will not be null as we already verified that the node has children.
             if ((nodeChildren.Count == 1) && (nodeChildren[0].NodeType == XmlNodeType.Text))
             {
                 return node.InnerText;
@@ -5921,7 +5980,7 @@ namespace System.Management.Automation
                 try
                 {
                     MethodInfo instantiatedMethod = genericMethod.MakeGenericMethod(inferredTypeParameters.ToArray());
-                    s_tracer.WriteLine("Inference succesful: {0}", instantiatedMethod);
+                    s_tracer.WriteLine("Inference successful: {0}", instantiatedMethod);
                     return instantiatedMethod;
                 }
                 catch (ArgumentException e)

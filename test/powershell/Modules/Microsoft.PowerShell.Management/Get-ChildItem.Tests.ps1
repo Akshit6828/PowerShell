@@ -38,11 +38,6 @@ Describe "Get-ChildItem" -Tags "CI" {
                 @{Parameters = @{Path = (Join-Path $searchRoot 'F*.txt'); Recurse = $true; File = $true }; ExpectedCount = 1; Title = "file with wildcard filename"}
             )
 
-            $SkipAppExeCLinks = $true
-            if ($IsWindows -and (Get-ChildItem -Path ~\AppData\Local\Microsoft\WindowsApps\*.exe -ErrorAction Ignore) -ne $null)
-            {
-                $SkipAppExeCLinks = $false
-            }
         }
 
         It "Should list the contents of the current folder" {
@@ -187,7 +182,8 @@ Describe "Get-ChildItem" -Tags "CI" {
             (Get-ChildItem -File -LiteralPath TestDrive:/ -Filter noext*.*).Name | Should -BeExactly 'noextension'
         }
 
-        It "Understand APPEXECLINKs" -Skip:($SkipAppExeCLinks) {
+        # Because "dotnet API is not available, see PR 16044
+        It "Understand APPEXECLINKs" -Skip {
             $app = Get-ChildItem -Path ~\appdata\local\microsoft\windowsapps\*.exe | Select-Object -First 1
             $app.Target | Should -Not -Be $app.FullName
             $app.LinkType | Should -BeExactly 'AppExeCLink'
@@ -216,6 +212,48 @@ Describe "Get-ChildItem" -Tags "CI" {
 
         It "Should list the folder present when path length equal to MAX_PATH" {
             (Get-ChildItem -Path TestDrive:\$item_I -Recurse -Force).Name.Length | Should -BeGreaterThan 0
+        }
+
+        It 'Trailing slash for -Path should treat it as a folder only when used with -recurse' {
+            $foo = New-Item -ItemType Directory -Path TestDrive:\foo
+            $foo2 = New-Item -ItemType Directory -Path TestDrive:\foo\foo
+            $bar = New-Item -ItemType File -Path TestDrive:\foo\bar
+            $bar2 = New-Item -ItemType File -Path TestDrive:\foo\foo\bar
+
+            { Get-ChildItem -Path testdrive:/foo/bar/ -Recurse -ErrorAction Stop } | Should -Throw -ErrorId 'ItemNotFound,Microsoft.PowerShell.Commands.GetChildItemCommand'
+            $barFiles = Get-ChildItem -Path testdrive:/foo/bar -Recurse
+            $barFiles.Count | Should -Be 2
+        }
+
+        It 'Works with Windows volume paths' -Skip:(!$IsWindows) {
+            $winPath = $env:windir
+            if (! $winPath) {
+                Set-ItResult -Skipped -Because "windir is null"
+                return
+            }
+
+            $driveLetter = $winPath[0]
+            $winPartialPath = $winPath.SubString(3) # skip the drive letter, colon, and backslash
+            Write-Verbose -Verbose "Partial path is '$winPartialPath'"
+            $volume = (Get-Volume -DriveLetter $driveLetter).Path
+            if (! $volume) {
+                Set-ItResult -Skipped -Because "Get-Volume returned no volume for system drive '$driveLetter'"
+                return
+            }
+
+            $items = Get-ChildItem -LiteralPath "${volume}${winPartialPath}"
+            Write-Verbose -Verbose "Trying files in '${volume}${winPartialPath}'"
+            if ($items.Count -eq 0) {
+                Write-Verbose -Verbose "`$items is null!!"
+            }
+
+            $items[0].Parent.FullName | Should -BeExactly "${volume}${winPartialPath}"
+            $items | Should -HaveCount (Get-ChildItem $winPath).Count
+        }
+
+        It 'Works with Windows pipes' -Skip:(!$IsWindows) {
+            $out = pwsh -noprofile -custompipename myTestPipe { Get-ChildItem \\.\pipe\myTestPipe }
+            $out.Name | Should -BeExactly 'myTestPipe'
         }
     }
 
@@ -271,7 +309,10 @@ Describe 'FileSystem Provider Formatting' -Tag "CI","RequireAdminOnWindows" {
 
         if ($IsWindows)
         {
-            $testcases += @{ expectedMode = "l----"; expectedModeWithoutHardlink = "l----"; itemType = "Junction"; itemName = "Junction-Directory"; fileAttributes = [System.IO.FileAttributes]::Directory -bor [System.IO.FileAttributes]::ReparsePoint; target = $targetDir1.FullName }
+            # arm64 adds the archive attribute
+            $junctionMode = (Test-IsWindowsArm64) ? "la---" : "l----"
+            $armFileAttributes = (Test-IsWindowsArm64) ? [System.IO.FileAttributes]"Directory,Archive,ReparsePoint" : [System.IO.FileAttributes]"Directory,ReparsePoint"
+            $testcases += @{ expectedMode = $junctionMode; expectedModeWithoutHardlink = $junctionMode; itemType = "Junction"; itemName = "Junction-Directory"; fileAttributes = $armFileAttributes; target = $targetDir1.FullName }
             $testcases += @{ expectedMode = "-a---"; expectedModeWithoutHardlink = "-a---"; itemType = "File"; itemName = "ArchiveFile"; fileAttributes = [System.IO.FileAttributes] "Archive"; target = $null }
             $testcases += @{ expectedMode = "la---"; expectedModeWithoutHardlink = "la---"; itemType = "SymbolicLink"; itemName = "SymbolicLink-File"; fileAttributes = [System.IO.FileAttributes]::Archive -bor [System.IO.FileAttributes]::ReparsePoint; target = $targetFile1.FullName }
             $testcases += @{ expectedMode = "la---"; expectedModeWithoutHardlink = "-a---"; itemType = "HardLink"; itemName = "HardLink"; fileAttributes = [System.IO.FileAttributes] "Archive"; target = $targetFile2.FullName }

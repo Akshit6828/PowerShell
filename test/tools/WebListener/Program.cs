@@ -44,7 +44,10 @@ namespace mvc
                         int.Parse(args[3]),
                         listenOptions =>
                         {
+                            #pragma warning disable SYSLIB0057
                             var certificate = new X509Certificate2(args[0], args[1]);
+                            #pragma warning restore SYSLIB0057
+
                             HttpsConnectionAdapterOptions httpsOption = new HttpsConnectionAdapterOptions();
                             httpsOption.SslProtocols = SslProtocols.Tls12;
                             httpsOption.ClientCertificateMode = ClientCertificateMode.AllowCertificate;
@@ -60,9 +63,15 @@ namespace mvc
                         int.Parse(args[4]),
                         listenOptions =>
                         {
+                            #pragma warning disable SYSLIB0057
                             var certificate = new X509Certificate2(args[0], args[1]);
+                            #pragma warning restore SYSLIB0057
+
                             HttpsConnectionAdapterOptions httpsOption = new HttpsConnectionAdapterOptions();
-                            httpsOption.SslProtocols = SslProtocols.Tls11;
+
+                            // TLS 1.1 is obsolete. Using this value now defaults to TLS 1.2.
+                            httpsOption.SslProtocols = SslProtocols.Tls12;
+
                             httpsOption.ClientCertificateMode = ClientCertificateMode.AllowCertificate;
                             httpsOption.ClientCertificateValidation = (inCertificate, inChain, inPolicy) => { return true; };
                             httpsOption.CheckCertificateRevocation = false;
@@ -76,9 +85,15 @@ namespace mvc
                         int.Parse(args[5]),
                         listenOptions =>
                         {
+                            #pragma warning disable SYSLIB0057
                             var certificate = new X509Certificate2(args[0], args[1]);
+                            #pragma warning restore SYSLIB0057
+
                             HttpsConnectionAdapterOptions httpsOption = new HttpsConnectionAdapterOptions();
-                            httpsOption.SslProtocols = SslProtocols.Tls;
+
+                            // TLS is obsolete. Using this value now defaults to TLS 1.2.
+                            httpsOption.SslProtocols = SslProtocols.Tls12;
+
                             httpsOption.ClientCertificateMode = ClientCertificateMode.AllowCertificate;
                             httpsOption.ClientCertificateValidation = (inCertificate, inChain, inPolicy) => { return true; };
                             httpsOption.CheckCertificateRevocation = false;
@@ -92,7 +107,10 @@ namespace mvc
                         int.Parse(args[6]),
                         listenOptions =>
                         {
+                            #pragma warning disable SYSLIB0057
                             var certificate = new X509Certificate2(args[0], args[1]);
+                            #pragma warning restore SYSLIB0057
+
                             HttpsConnectionAdapterOptions httpsOption = new HttpsConnectionAdapterOptions();
                             httpsOption.SslProtocols = SslProtocols.Tls13;
                             httpsOption.ClientCertificateMode = ClientCertificateMode.AllowCertificate;

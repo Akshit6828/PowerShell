@@ -644,3 +644,53 @@ Describe "Parsing array that has too many dimensions" -Tag CI {
         }
     }
 }
+
+Describe "Parsing using statement with alias and linebreak and comma" -Tag CI {
+    It "ParseError for '<Script>'" -TestCases @(
+        @{ Script = "using namespace x =`n"; ErrorId = @('MissingNamespaceAlias'); StartOffset = @(19); EndOffset = @(19) }
+        @{ Script = "using namespace x = `n"; ErrorId = @('MissingNamespaceAlias'); StartOffset = @(19); EndOffset = @(19) }
+        @{ Script = "using namespace x = ;"; ErrorId = @('MissingNamespaceAlias'); StartOffset = @(19); EndOffset = @(19) }
+        @{ Script = "using namespace x = ,"; ErrorId = @('UnexpectedUnaryOperator'); StartOffset = @(20); EndOffset = @(21) }
+        @{ Script = "using namespace x = &"; ErrorId = @('InvalidValueForUsingItemName','MissingExpression'); StartOffset = @(20, 20); EndOffset = @(21, 21) }
+    ) {
+        param($Script, $ErrorId, $StartOffset, $EndOffset)
+
+        $errs = Get-ParseResults -src $Script
+        $errs.Count | Should -Be $ErrorId.Count
+        for ($i = 0; $i -lt $errs.Count; $i++) {
+            $errs[$i].ErrorId | Should -BeExactly $ErrorId[$i]
+            $errs[$i].Extent.StartScriptPosition.Offset | Should -Be $StartOffset[$i]
+            $errs[$i].Extent.EndScriptPosition.Offset | Should -Be $EndOffset[$i]
+        }
+    }
+}
+
+Describe "Additional tests" -Tag CI {
+    It "Should correctly parse array literals for index expressions in method calls" {
+        $tks = $null
+        $ers = $null
+        $Script = '[string]::join(" ", (0, 1, 2)[0, 1])'
+        $result = [System.Management.Automation.Language.Parser]::ParseInput($Script, [ref]$tks, [ref]$ers)
+        $result.EndBlock.Statements[0].PipelineElements[0].Expression.Arguments[1].Index.Elements.Count | Should -Be 2
+        $ers.Count | Should -Be 0
+    }
+
+    It "Should correctly parse array types that are used as arguments without brackets in generic type" {
+        $tks = $null
+        $ers = $null
+        $Script = '[System.Tuple[System.String[],System.Int32[]]]'
+        $result = [System.Management.Automation.Language.Parser]::ParseInput($Script, [ref]$tks, [ref]$ers)
+        $result.EndBlock.Statements[0].PipelineElements[0].Expression.TypeName.FullName | Should -Be 'System.Tuple[System.String[],System.Int32[]]'
+    }
+
+    It "Should get correct offsets for number constant parsing error" {
+        $tks = $null
+        $ers = $null
+        $Script = '$n = 0x10000000000000000'
+        $null = [System.Management.Automation.Language.Parser]::ParseInput($Script, [ref]$tks, [ref]$ers)
+        $ers.Length | Should -BeExactly 1
+        $ers[0].Extent.StartOffset | Should -BeExactly 5
+        $ers[0].Extent.EndOffset | Should -BeExactly 24
+        $ers[0].Extent.Text | Should -BeExactly '0x10000000000000000'
+    }
+}

@@ -4,7 +4,6 @@ parameters:
 jobs:
   - job: MacFileSigningJob_${{ parameters.buildArchitecture }}
     displayName: macOS File signing ${{ parameters.buildArchitecture }}
-    dependsOn: build_macOS_${{ parameters.buildArchitecture }}
     condition: succeeded()
     pool:
       name: PowerShell1ES
@@ -118,3 +117,5 @@ jobs:
       inputs:
         sourceScanPath: '$(repoRoot)\tools'
         snapshotForceEnabled: true
+
+    - template: /tools/releaseBuild/azureDevOps/templates/step/finalize.yml
